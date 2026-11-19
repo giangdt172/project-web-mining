@@ -1,0 +1,53 @@
+# Ablation suite on B5 / B6 (Section 9.2)
+# Each ablation flips one component relative to the tuned configuration.
+
+ablations:
+  no_decay:
+    description: "Remove answer-level recency decay (τ = ∞)"
+    overrides:
+      quality.tau_days: null
+
+  no_acceptance_bonus:
+    description: "Remove acceptance bonus (β = 0)"
+    overrides:
+      quality.beta: 0.0
+
+  no_kappa_leak:
+    description: "Remove graph damping leak mass (κ = 0)"
+    overrides:
+      graph.kappa_multiplier: 0.0
+
+  uncapped_vote_score:
+    description: "Use uncapped point-in-time vote score instead of H_v-capped score"
+    overrides:
+      quality.cap_vote_horizon: false
+
+  uniform_tag_weights:
+    description: "Use uniform query tag weights instead of snapshot IDF π_t"
+    overrides:
+      graph.uniform_tag_weights: true
+
+  alt_expertise_variant:
+    description: "Compare E_sum vs E_prod"
+    overrides:
+      quality.expertise_variant: "E_sum"
+
+  alt_fusion_method:
+    description: "Compare RRF vs weighted linear fusion"
+    overrides:
+      fusion.method: "rrf"
+
+  one_hop_ppr:
+    description: "One-hop diagnostic PPR_1 instead of multi-hop PPR"
+    overrides:
+      graph.one_hop_only: true
+
+  asker_answerer_edges:
+    description: "Add Asker -> Answerer edges to the heterogeneous graph"
+    overrides:
+      graph.include_asker_answerer: true
+
+  no_availability_filter:
+    description: "Rank all users with cluster history (no W-day candidate pool filter)"
+    overrides:
+      candidates.activity_window_days: null

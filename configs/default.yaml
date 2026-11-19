@@ -1,0 +1,81 @@
+# Default experiment configuration (Section 1–9 of v3 design spec)
+
+paths:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  snapshots_dir: data/snapshots
+  embeddings_dir: data/embeddings
+  reports_dir: reports
+
+tag_cluster:
+  seed_tags:
+    - pytorch
+    - tensorflow
+    - keras
+    - cuda
+  cooccurrence_threshold: 0.05
+  target_min_questions: 50000
+  target_max_questions: 150000
+
+labels:
+  answer_horizon_days: 7      # H_a
+  vote_horizon_days: 30       # H_v
+  useful_score_threshold: 1
+
+splits:
+  history_start: "2017-01-01"
+  history_end: "2021-06-30"
+  val_tune_start: "2021-07-01"
+  val_tune_end: "2021-10-31"
+  val_check_start: "2021-11-01"
+  val_check_end: "2021-12-31"
+  test_main_start: "2022-01-01"
+  test_main_end: "2022-09-30"
+  test_shift_start: "2023-07-01"
+  test_shift_end: "2024-06-30"
+
+candidates:
+  activity_window_days: 180   # W (Stage 0)
+
+quality:
+  epsilon: 0.1                # ε
+  beta: 1.0                   # β (acceptance bonus)
+  tau_days: 365.0             # τ (recency decay half-scale; null for ∞)
+  smoothing_m: 5.0            # m (Bayesian prior strength)
+  expertise_variant: "E_prod" # "E_sum" or "E_prod"
+  cap_vote_horizon: true
+
+graph:
+  kappa_multiplier: 1.0       # c in κ = c * median(q_τ)
+  damping: 0.5                # d
+  ppr_tol: 1.0e-7
+  ppr_max_iter: 100
+  include_asker_answerer: false
+
+retrieval:
+  variant: "bm25"             # "bm25", "dense", or "hybrid"
+  dense_model: "sentence-transformers/all-MiniLM-L6-v2"
+  top_k: 50                   # K
+  seed_gamma: 0.4             # γ (question-seed weight in PPR restart)
+  rrf_k: 60
+
+fusion:
+  method: "linear"            # "rrf" or "linear"
+  weights:
+    expertise: 0.5
+    ppr: 0.3
+    text_sim: 0.2
+  tie_break_seed: 42
+
+baselines:
+  b0_window_days: 90
+  b2_tau_days: 365.0
+
+evaluation:
+  primary_metric: "ndcg@10"
+  cutoffs: [5, 10]
+  bootstrap_samples: 1000
+  randomization_trials: 10000
+  alpha: 0.05
+  random_seed: 42

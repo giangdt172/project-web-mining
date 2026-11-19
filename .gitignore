@@ -221,3 +221,26 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data, caches, and generated artifacts
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/snapshots/*
+!data/snapshots/.gitkeep
+data/embeddings/*
+!data/embeddings/.gitkeep
+reports/figures/*
+!reports/figures/.gitkeep
+reports/tables/*
+!reports/tables/.gitkeep
+*.parquet
+*.npz
+*.npy
+*.xml
+*.7z
+*.duckdb
+*.duckdb.wal

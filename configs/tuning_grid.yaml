@@ -1,0 +1,27 @@
+# Staged validation tuning grids (Section 9.4)
+# Tuned on validation months 1–4; checked for overfitting on months 5–6.
+
+stage_0_candidate_pool:
+  activity_window_days: [90, 180, 365]
+
+stage_1_quality_table:
+  epsilon: [0.05, 0.1, 0.5]
+  beta: [0.0, 0.5, 1.0, 2.0]
+  tau_days: [90.0, 180.0, 365.0, null]  # null = ∞
+  smoothing_m: [2.0, 5.0, 10.0]
+  expertise_variant: ["E_sum", "E_prod"]
+
+stage_1b_baselines:
+  b0_window_days: [30, 90, 180]
+  b2_tau_days: [90.0, 180.0, 365.0, null]
+
+stage_2_graph_ppr:
+  kappa_multiplier: [0.0, 0.5, 1.0, 2.0]
+  damping: [0.3, 0.5, 0.7, 0.85]
+
+stage_3_text_and_fusion:
+  seed_gamma: [0.0, 0.2, 0.4, 0.6]
+  top_k: [20, 50, 100]
+  retrieval_variant: ["bm25", "dense_minilm", "dense_bge_small", "hybrid"]
+  fusion_method: ["rrf", "linear"]
+  linear_weight_step: 0.1
