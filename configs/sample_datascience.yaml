@@ -1,0 +1,40 @@
+# Sample dev configuration for a smaller Stack Exchange dump (e.g. datascience.stackexchange.com.7z)
+# Drop datascience.stackexchange.com.7z into data/raw/ and run:
+#   python scripts/01_extract_and_validate.py --config configs/sample_datascience.yaml
+
+paths:
+  raw_dir: data/raw
+  interim_dir: data/interim/sample_ds
+  processed_dir: data/processed/sample_ds
+  snapshots_dir: data/snapshots/sample_ds
+  embeddings_dir: data/embeddings/sample_ds
+  reports_dir: reports/sample_ds
+
+tag_cluster:
+  seed_tags:
+    - deep-learning
+    - neural-network
+    - pytorch
+    - tensorflow
+    - keras
+  cooccurrence_threshold: 0.15
+  min_tag_count: 10
+  target_min_questions: 5000
+  target_max_questions: 50000
+
+labels:
+  answer_horizon_days: 7      # H_a
+  vote_horizon_days: 30       # H_v
+  useful_score_threshold: 1
+
+splits:
+  history_start: "2017-01-01"
+  history_end: "2021-06-30"
+  val_tune_start: "2021-07-01"
+  val_tune_end: "2021-10-31"
+  val_check_start: "2021-11-01"
+  val_check_end: "2021-12-31"
+  test_main_start: "2022-01-01"
+  test_main_end: "2022-09-30"
+  test_shift_start: "2023-07-01"
+  test_shift_end: "2024-06-30"

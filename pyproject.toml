@@ -7,7 +7,7 @@ name = "so-expert-rec"
 version = "0.1.0"
 description = "Quality-Aware Expert Recommendation on Stack Overflow via Heterogeneous Graph Mining"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "bm25s>=0.2.0",
     "duckdb>=1.0.0",
@@ -46,4 +46,4 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
