@@ -233,6 +233,9 @@ data/snapshots/*
 !data/snapshots/.gitkeep
 data/embeddings/*
 !data/embeddings/.gitkeep
+reports/*
+!reports/figures/
+!reports/tables/
 reports/figures/*
 !reports/figures/.gitkeep
 reports/tables/*
