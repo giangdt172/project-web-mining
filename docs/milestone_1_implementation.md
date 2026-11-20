@@ -4,18 +4,27 @@ This document summarizes the project scaffold, Python environment setup, and **M
 
 ---
 
-## 1. Environment Setup (`conda` env: `huync`)
+## 1. Environment Setup
 
-The project is configured to run in the existing `huync` Conda environment (`/home/b00l/.conda/envs/huync`, Python 3.10.19):
+Requires **Python ≥ 3.10** (configured in `pyproject.toml`) and **`7z` / `p7zip`** on `PATH` if streaming directly from `.7z` archives.
 
-- Updated `pyproject.toml` to support `requires-python >= 3.10`.
-- Verified pre-installed packages in `huync`: `pyarrow`, `numpy`, `scipy`, `pyyaml`, `matplotlib`, `tqdm`, `pytest`.
-- Installed missing Milestone 1 / core packages into `huync`:
-  - `lxml` (6.1.3) — constant-memory streaming XML parsing (`iterparse`)
-  - `duckdb` (1.5.6) — analytical SQL joins & aggregations over Parquet
-  - `bm25s` (0.3.16) — fast per-snapshot BM25 retrieval (ready for Milestone 4)
-  - `hatchling` + `editables` — PEP 517 editable package installation
-- Installed the local library in editable mode (`so-expert-rec==0.1.0` from `src/so_expert_rec`).
+### Recommended (any machine): `uv`
+```bash
+# Install core dependencies + dev tools (pytest, ruff) into a local .venv
+uv sync --extra dev
+
+# Run any script or test via uv without manual activation
+uv run pytest -v
+uv run python scripts/01_extract_and_validate.py --config configs/sample_datascience.yaml
+```
+
+### Alternative: existing Conda / virtual environment
+If you prefer managing dependencies inside an existing Conda environment (e.g. `conda activate <env>`):
+```bash
+conda activate <env>
+pip install -e ".[dev]"
+```
+Core runtime packages: `lxml`, `duckdb`, `pyarrow`, `numpy`, `scipy`, `bm25s`, `pyyaml`, `matplotlib`, `tqdm`.
 
 ---
 
@@ -96,29 +105,30 @@ Ties all six steps together with progress output and writes `reports/tables/mile
 
 ## 4. How to Run Milestone 1
 
+*(Commands below use `uv run`. If you have activated a Conda or virtual environment manually, omit `uv run`.)*
+
 ### Option A: Small Dev Sample (`datascience.stackexchange.com.7z` or `stats.stackexchange.com.7z`)
 1. Download the site dump from **Profile → Settings → Data dump access** and place the `.7z` file into `data/raw/`.
 2. *(Optional)* Export `TagSynonyms` from [SEDE](https://data.stackexchange.com) (`SELECT SourceTagName, TargetTagName FROM TagSynonyms`) as `data/raw/TagSynonyms.csv`.
 3. Run:
    ```bash
-   conda activate huync
-   python scripts/01_extract_and_validate.py --config configs/sample_datascience.yaml
+   uv run python scripts/01_extract_and_validate.py --config configs/sample_datascience.yaml
    ```
 
 ### Option B: Full Stack Overflow Dump
 1. Place `stackoverflow.com-Posts.7z`, `stackoverflow.com-Votes.7z`, `stackoverflow.com-PostHistory.7z`, `stackoverflow.com-Tags.7z` (and optional `TagSynonyms.csv`) in `data/raw/` — **no manual decompression required**.
 2. Run:
    ```bash
-   conda activate huync
-   python scripts/01_extract_and_validate.py --config configs/default.yaml
+   uv run python scripts/01_extract_and_validate.py --config configs/default.yaml
    ```
 
-Inspect outputs in `reports/tables/` (`milestone1_summary.json`, `score_sanity_check.json`, `tag_cluster_audit.csv`, `monthly_volumes.csv`) and `reports/figures/` (`horizon_curves.png`, `monthly_volumes.png`).
+Inspect outputs in `reports/<run>/tables/` (`milestone1_summary.json`, `score_sanity_check.json`, `tag_cluster_audit.csv`, `monthly_volumes.csv`) and `reports/<run>/figures/` (`horizon_curves.png`, `monthly_volumes.png`).
 
 ---
 
-## 5. Verification & Tests
+## 5. Verification & Dev-Sample Results
 
+### Automated Tests
 Added [`tests/test_milestone1_extraction.py`](../tests/test_milestone1_extraction.py) with synthetic XML and `.7z` fixtures testing:
 - Config loading and staged dependency cache key isolation (`quality`, `graph`, `ppr`, `fusion`).
 - Legacy `<tag>` and 2024 `|tag|` parsing, synonym chain canonicalization, and BM25 vs. dense HTML stripping.
@@ -126,21 +136,28 @@ Added [`tests/test_milestone1_extraction.py`](../tests/test_milestone1_extractio
 - Full XML extraction, `PostHistory` type filtering (`1/2/3/10` only, ignoring later edits), vote-score sanity check, horizon curve CDFs + plots, fixed-horizon label edge cases (self-answer/ownerless/CW/late-answer/late-vote/duplicate-closed/dump-horizon censoring), and monthly volume summaries.
 - Direct `.7z` streaming via `7z e -so` and end-to-end CLI execution of `scripts/01_extract_and_validate.py`.
 
-Latest test run in `huync`:
 ```text
-/home/b00l/.conda/envs/huync/bin/pytest -v
-5 passed, 11 skipped in 2.06s
+uv run pytest -v
+5 passed, 11 skipped
 ```
 *(The 11 skipped tests are placeholders for Milestones 2–3.)*
+
+### Real-Dump Smoke Run (`datascience.stackexchange.com.7z`)
+- **Runtime:** `6.11s` streaming directly from `.7z` (`36,322` questions scanned → `30,971` kept across `232` tags; `67,421` total posts checked).
+- **Score sanity check:** `99.99%` exact match (`100.00%` within ±1, `MAE = 0.00012`).
+- **Horizon curves:** `73.9%` of answers within `H_a = 7` days; `47.4%` of votes within `H_v = 30` days (sharp elbow around 7d/30d followed by a flat multi-year search tail, confirming why `H_v` capping is needed).
+- **Graded labels:** `8,126` (grade `0`) / `9,086` (grade `1`) / `8,167` (grade `2`); `86.0%` of useful queries have 1 useful answerer, `11.6%` have 2, `2.4%` have 3+.
+- **Evaluable split volumes (useful queries):** `history`: `9,767` | `val_total`: `683` (`458` tune + `225` check) | `test_main`: `871` | `test_shift`: `610`.
+  *(Sufficient for fast Milestone 2–4 development; full Stack Overflow dump will be used for final ≥ 2k val / ≥ 3k test evaluation.)*
 
 ---
 
 ## 6. Next Steps (Milestone 2)
 
-1. Run `scripts/01_extract_and_validate.py` on a real small dump (e.g. `datascience.stackexchange.com.7z`) to inspect real horizon curves, score agreement, and monthly volumes.
-2. Implement **Milestone 2**:
+1. Implement **Milestone 2** and verify on `sample_ds`:
    - `data/precompute.py` (cumulative vote arrays + per-answer tag weights $w_{a,t}$)
    - `features/quality.py`, `features/expertise.py`, `features/snapshot.py`
    - `models/candidates.py`, `models/baselines.py` (B0–B3), `models/fusion.py`
    - `evaluation/metrics.py` & `evaluation/significance.py` (bootstrap CIs + paired randomization + Holm correction)
    - Activate `tests/test_quality_and_expertise.py`, `tests/test_point_in_time_leakage.py`, and `tests/test_metrics_and_fusion.py`.
+2. Once Milestones 2–4 are validated on `sample_ds`, re-run Milestone 1 on the full Stack Overflow dump (`configs/default.yaml`).
