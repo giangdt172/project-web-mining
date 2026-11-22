@@ -100,6 +100,7 @@ class FusionConfig:
 class BaselinesConfig:
     b0_window_days: int = 90
     b2_tau_days: float | None = 365.0
+    b4_damping: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -220,6 +221,7 @@ def load_config(path: Path) -> ExperimentConfig:
     baselines = BaselinesConfig(
         b0_window_days=int(b_d.get("b0_window_days", 90)),
         b2_tau_days=None if b2_tau is None else float(b2_tau),
+        b4_damping=float(b_d.get("b4_damping", 0.5)),
     )
 
     e_d = _section(raw, "evaluation")
