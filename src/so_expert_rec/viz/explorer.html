@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+/*__KIT_CSS__*/
+.controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-end; margin-bottom: 14px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink2); min-width: 120px; }
+.field b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.field.grow { flex: 1 1 320px; }
+input[type=range] { width: 150px; accent-color: var(--tag); }
+input[type=text] { font: inherit; background: var(--page); color: var(--ink); border: 1px solid var(--ring); border-radius: 8px; padding: 6px 10px; min-width: 150px; width: 100%; }
+input[type=text]:focus-visible, button:focus-visible { outline: 2px solid var(--tag); outline-offset: 1px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--page); border: 1px solid var(--ring); border-radius: 999px; padding: 3px 4px 3px 10px; color: var(--ink); font-size: 13px; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--tag); }
+button, .btn { font: inherit; font-size: 13px; background: var(--surface); color: var(--ink2); border: 1px solid var(--ring); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+button:hover { color: var(--ink); border-color: var(--axis); }
+.chip button { border: 0; background: transparent; padding: 0 6px; font-size: 15px; line-height: 1; border-radius: 999px; }
+.seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: var(--page); }
+.seg button[aria-pressed=true] { background: var(--ink); color: var(--surface); }
+main { max-width: 1520px; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.stage { position: relative; }
+.stage svg { display: block; width: 100%; height: auto; touch-action: none; cursor: grab; }
+.stage svg.panning { cursor: grabbing; }
+.zoom { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
+.zoom button { width: 30px; height: 30px; padding: 0; font-size: 16px; }
+.hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+aside .card { margin-bottom: 14px; }
+aside h2 { margin-bottom: 8px; }
+.urow { display: grid; grid-template-columns: 22px 1fr 54px; gap: 6px; align-items: center; width: 100%; text-align: left; padding: 4px 6px; border: 0; background: transparent; border-radius: 6px; color: var(--ink); font-size: 12.5px; }
+.urow:hover, .urow.on { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.urow .bar { height: 6px; border-radius: 3px; background: var(--user); }
+.urow .rk { color: var(--muted); font-variant-numeric: tabular-nums; }
+.urow .sc { color: var(--ink2); text-align: right; font-variant-numeric: tabular-nums; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 12.5px; color: var(--ink2); margin: 0 0 8px; }
+.kv b { color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; }
+.detail h3 { margin: 0 0 6px; font-size: 14px; overflow-wrap: anywhere; }
+.detail .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.empty { color: var(--muted); font-size: 12.5px; margin: 0; }
+.node.pinned circle { stroke: var(--ink); stroke-width: 3; }
+.node { cursor: pointer; }
+.node.dragging { cursor: grabbing; }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+"use strict";
+/*__KIT_JS__*/
+
+/* =========================================================================================
+   Data: the whole transition graph is embedded (CSR blocks, base64) so every number on this
+   page is recomputed live in the browser. PPR here is the same absorbing Neumann series as
+   so_expert_rec.graph.ppr: x = (1-d) * sum_k (d P^T)^k s.
+   ========================================================================================= */
+const D = JSON.parse(document.getElementById("payload").textContent);
+function dec(b64, T) { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new T(u.buffer); }
+function loadGraph(g) {
+  const m = k => ({ ip: dec(g[k].ip, Int32Array), ix: dec(g[k].ix, Int32Array), dt: dec(g[k].dt, Float32Array) });
+  return { tq: m("tq"), qu: m("qu"), ut: m("ut"), kappa: g.kappa, nT: g.tq.shape[0], nQ: g.qu.shape[0], nU: g.ut.shape[0] };
+}
+const GR = {};
+for (const k in D.graphs) GR[k] = loadGraph(D.graphs[k]);
+const TAGIDX = new Map(D.tags.map((t, i) => [t, i]));
+const colCache = {};
+function answeredCount(G, key) {
+  if (!colCache[key]) { const c = new Int32Array(G.nU); for (let i = 0; i < G.qu.ix.length; i++) c[G.qu.ix[i]]++; colCache[key] = c; }
+  return colCache[key];
+}
+
+function push(src, M, nOut) {
+  const out = new Float64Array(nOut);
+  for (let r = 0; r < src.length; r++) {
+    const m = src[r]; if (m === 0) continue;
+    for (let k = M.ip[r]; k < M.ip[r + 1]; k++) out[M.ix[k]] += m * M.dt[k];
+  }
+  return out;
+}
+/* Absorbing PPR with uniform tag restarts. Returns user/question/tag mass and per-step mass by type. */
+function ppr(G, seeds, d) {
+  let t = new Float64Array(G.nT), q = new Float64Array(G.nQ), u = new Float64Array(G.nU);
+  for (const s of seeds) t[s] = (1 - d) / seeds.length;
+  const xt = Float64Array.from(t), xq = new Float64Array(G.nQ), xu = new Float64Array(G.nU), steps = [];
+  const sum = a => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s; };
+  for (let it = 0; it < 400; it++) {
+    const mt = sum(t), mq = sum(q), mu = sum(u);
+    steps.push({ tag: mt, question: mq, user: mu });
+    if (mt + mq + mu < 1e-12) break;
+    const nq = push(t, G.tq, G.nQ), nu = push(q, G.qu, G.nU), nt = push(u, G.ut, G.nT);
+    t = nt; q = nq; u = nu;
+    for (let i = 0; i < t.length; i++) { t[i] *= d; xt[i] += t[i]; }
+    for (let i = 0; i < q.length; i++) { q[i] *= d; xq[i] += q[i]; }
+    for (let i = 0; i < u.length; i++) { u[i] *= d; xu[i] += u[i]; }
+  }
+  return { xt, xq, xu, steps };
+}
+
+/* ---------- state (mirrored into the URL hash so a view can be shared) ---------- */
+const S0 = { seeds: [], d: D.damping, nUsers: 8, nQ: 10, kPer: 2, graph: "weighted", pinned: null, hover: null, tx: 0, ty: 0, k: 1 };
+const ST = Object.assign({}, S0);
+const yOv = new Map();
+function seedsFromNames(names) { return names.map(n => TAGIDX.get(n)).filter(i => i !== undefined); }
+(function readHash() {
+  ST.seeds = seedsFromNames(D.defaultTags);
+  try {
+    const p = new URLSearchParams(location.hash.slice(1));
+    if (p.get("tags")) { const s = seedsFromNames(p.get("tags").split(",")); if (s.length) ST.seeds = s; }
+    const num = (k, lo, hi) => { const v = parseFloat(p.get(k)); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
+    ST.d = num("d", 0.05, 0.95) ?? ST.d; ST.nUsers = num("u", 3, 20) ?? ST.nUsers; ST.nQ = num("q", 3, 25) ?? ST.nQ; ST.kPer = num("k", 1, 4) ?? ST.kPer;
+    if (p.get("g") === "unweighted" && GR.unweighted) ST.graph = "unweighted";
+  } catch (e) { /* hash is optional */ }
+})();
+function writeHash() {
+  try {
+    const p = new URLSearchParams({ tags: ST.seeds.map(i => D.tags[i]).join(","), d: ST.d, u: ST.nUsers, q: ST.nQ, k: ST.kPer, g: ST.graph });
+    history.replaceState(null, "", "#" + p.toString());
+  } catch (e) { /* e.g. sandboxed frames */ }
+}
+
+/* ---------- page scaffold ---------- */
+const app = document.getElementById("app");
+const hdr = H("header", null, null, app);
+const hd = H("div", null, null, hdr);
+H("h1", null, "Graph explorer · snapshot " + D.month, hd);
+H("p", "sub", "Pick seed tags and the page recomputes absorbing PPR over the real transition graph, then draws one lap of Tag → Question → User → Tag around them. Everything below is live.", hd);
+const themeBtn = H("button", "theme", "Toggle dark / light", hdr); themeBtn.type = "button";
+themeBtn.addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.dataset.theme = cur === "dark" ? "light" : "dark";
+});
+
+const ctrlCard = H("section", "card", null, app); ctrlCard.style.marginBottom = "14px";
+const controls = H("div", "controls", null, ctrlCard);
+
+// seed tags: chips + datalist input
+const fSeeds = H("div", "field grow", null, controls);
+H("span", null, "Seed tags (equal restart weight)", fSeeds);
+const chips = H("div", "chips", null, fSeeds);
+const dl = H("datalist", null, null, ctrlCard); dl.id = "taglist";
+D.tags.forEach(t => { const o = H("option", null, null, dl); o.value = t; });
+const tagInput = H("input", null, null, null); tagInput.type = "text"; tagInput.setAttribute("list", "taglist"); tagInput.placeholder = "add a tag… (type to search 685)"; tagInput.setAttribute("aria-label", "Add seed tag");
+fSeeds.appendChild(tagInput);
+const quick = H("div", "chips", null, fSeeds);
+H("span", null, "Try:", quick); quick.firstChild.style.fontSize = "12px";
+D.popular.slice(0, 7).forEach(name => { const b = H("button", null, name, quick); b.type = "button"; b.addEventListener("click", () => setSeeds([TAGIDX.get(name)])); });
+
+const sliders = {};
+function slider(key, label, min, max, step, fmtv) {
+  const f = H("label", "field", null, controls);
+  const top = H("span", null, label + " ", f); const val = H("b", null, null, top);
+  const inp = H("input", null, null, f); inp.type = "range"; inp.min = min; inp.max = max; inp.step = step; inp.value = ST[key];
+  const show = () => { val.textContent = fmtv(+inp.value); };
+  inp.addEventListener("input", () => { ST[key] = +inp.value; show(); schedule(); });
+  show(); sliders[key] = { inp, show };
+}
+slider("d", "Damping d", 0.05, 0.95, 0.05, v => v.toFixed(2));
+slider("nUsers", "Users shown", 3, 20, 1, v => v);
+slider("nQ", "Questions shown", 3, 25, 1, v => v);
+slider("kPer", "Tags per user", 1, 4, 1, v => v);
+
+const fGraph = H("div", "field", null, controls);
+H("span", null, "Graph", fGraph);
+const seg = H("div", "seg", null, fGraph);
+const segBtns = {};
+[["weighted", "Quality-weighted (B4w)"], ["unweighted", "Unweighted (B4)"]].forEach(([k, label]) => {
+  if (!GR[k]) return;
+  const b = H("button", null, label, seg); b.type = "button";
+  b.addEventListener("click", () => { ST.graph = k; ST.pinned = null; schedule(); });
+  segBtns[k] = b;
+});
+const resetBtn = H("button", null, "Reset layout", H("div", "field", null, controls)); resetBtn.type = "button";
+resetBtn.addEventListener("click", () => { yOv.clear(); ST.tx = 0; ST.ty = 0; ST.k = 1; draw(); });
+
+const layout = H("div", "layout", null, app);
+const stageCard = H("section", "card", null, layout);
+const stage = H("div", "stage", null, stageCard);
+const zoom = H("div", "zoom", null, stage);
+[["+", 1.25], ["−", 0.8], ["⟲", 0]].forEach(([txt, f]) => {
+  const b = H("button", null, txt, zoom); b.type = "button"; b.title = f ? "Zoom" : "Reset zoom"; b.setAttribute("aria-label", b.title);
+  b.addEventListener("click", () => { if (!f) { ST.tx = 0; ST.ty = 0; ST.k = 1; } else zoomAt(svgW / 2, svgH / 2, f); applyViewport(); });
+});
+const svg = S("svg", { role: "img", "aria-label": "Tag, question and user transition graph" }, stage);
+H("p", "hint", "Hover to inspect · click a node to pin it · double-click a tag to walk there · shift-click a tag to add it as a seed · drag a node vertically · drag the background to pan · Ctrl/⌘ + scroll or the buttons to zoom.", stageCard);
+const aside = H("aside", null, null, layout);
+const statsCard = H("section", "card", null, aside); H("h2", null, "This query", statsCard); const statsBody = H("div", null, null, statsCard);
+const usersCard = H("section", "card", null, aside); H("h2", null, "Top users by PPR", usersCard); const usersBody = H("div", null, null, usersCard);
+const stepsCard = H("section", "card", null, aside); H("h2", null, "Where the walk's mass goes", stepsCard); const stepsBody = H("div", null, null, stepsCard);
+const detailCard = H("section", "card detail", null, aside); H("h2", null, "Selected node", detailCard); const detailBody = H("div", null, null, detailCard);
+
+/* ---------- build the view model for the current controls ---------- */
+const pct = v => (100 * v).toFixed(1) + "%";
+const f3 = v => fmt(v);
+function topIdx(scores, k) {
+  const idx = []; for (let i = 0; i < scores.length; i++) if (scores[i] > 0) idx.push(i);
+  idx.sort((a, b) => scores[b] - scores[a] || a - b); return idx.slice(0, k);
+}
+let V = null;   // current view model
+
+function buildView() {
+  const G = GR[ST.graph], seeds = ST.seeds;
+  const res = ppr(G, seeds, ST.d);
+  const users = topIdx(res.xu, ST.nUsers), uSet = new Set(users);
+  const topScore = users.length ? res.xu[users[0]] : 1;
+  const uRank = new Map(users.map((u, i) => [u, i + 1]));
+
+  // candidate questions: those carrying a seed tag, ranked by the mass they send to the shown users
+  const seedW = new Map();               // q -> Map(seed -> P(t,q))
+  seeds.forEach(t => { for (let k = G.tq.ip[t]; k < G.tq.ip[t + 1]; k++) { const q = G.tq.ix[k]; if (!seedW.has(q)) seedW.set(q, new Map()); seedW.get(q).set(t, G.tq.dt[k]); } });
+  const rowInfo = q => { let tot = 0, shown = 0; for (let k = G.qu.ip[q]; k < G.qu.ip[q + 1]; k++) { tot += G.qu.dt[k]; if (uSet.has(G.qu.ix[k])) shown += G.qu.dt[k]; } return { tot, shown }; };
+  const cands = [];
+  seedW.forEach((_, q) => { const r = rowInfo(q); if (r.shown > 0) cands.push({ q, shown: r.shown, tot: r.tot }); });
+  cands.sort((a, b) => b.shown - a.shown || a.q - b.q);
+  const qSel = cands.slice(0, ST.nQ), qSet = new Set(qSel.map(c => c.q));
+  const nQt = seeds.reduce((a, t) => a + (G.tq.ip[t + 1] - G.tq.ip[t]), 0);
+
+  // tags reached: each shown user's top-k tags, seeds always kept (loop-back)
+  const nextTags = [];
+  seeds.forEach(t => nextTags.push(t));
+  users.forEach(u => {
+    const row = []; for (let k = G.ut.ip[u]; k < G.ut.ip[u + 1]; k++) row.push([G.ut.ix[k], G.ut.dt[k]]);
+    row.sort((a, b) => b[1] - a[1]); row.slice(0, ST.kPer).forEach(([t]) => { if (!nextTags.includes(t)) nextTags.push(t); });
+  });
+  const tSet = new Set(nextTags), seedSet = new Set(seeds), cnt = answeredCount(G, ST.graph);
+
+  const nodes = [], edges = [], byId = {};
+  const add = n => { nodes.push(n); byId[n.id] = n; return n; };
+  seeds.forEach((t, i) => add({ id: "s" + t, col: 0, kind: "tag", idx: t, label: D.tags[t], size: 1, rank: i, pinned: true, tip: [["node", "tag (seed)"], ["questions carrying it", (G.tq.ip[t + 1] - G.tq.ip[t]).toLocaleString()]] }));
+  qSel.forEach((c, i) => add({ id: "q" + c.q, col: 1, kind: "question", idx: c.q, label: shorten(D.qTitles[c.q], 32), full: D.qTitles[c.q], size: c.tot, rank: i, tip: [["node", "question"], ["answered mass", f3(c.tot)], ["absorbed (leak)", f3(Math.max(0, 1 - c.tot))]] }));
+  users.forEach((u, i) => add({ id: "u" + u, col: 2, kind: "user", idx: u, label: "user " + D.userIds[u], size: res.xu[u] / topScore, rank: i, tip: [["node", "user"], ["PPR score", res.xu[u].toFixed(4)], ["rank by PPR", "#" + (i + 1)], ["answered questions (in graph)", cnt[u].toLocaleString()]] }));
+  nextTags.forEach((t, i) => add({ id: "t" + t, col: 3, kind: "tag", idx: t, label: D.tags[t], size: 0.2, rank: 10 + i, tip: [["node", seedSet.has(t) ? "tag (seed, loop-back)" : "tag (next lap)"]] }));
+
+  // Tag -> Question
+  seeds.forEach(t => { for (let k = G.tq.ip[t]; k < G.tq.ip[t + 1]; k++) { const q = G.tq.ix[k]; if (qSet.has(q)) edges.push({ s: "s" + t, t: "q" + q, w: G.tq.dt[k], layer: "tag->question", kind: "walk" }); } });
+  // Question -> User, leak -> sink
+  let leaky = false;
+  qSel.forEach(c => {
+    let hidden = 0;
+    for (let k = G.qu.ip[c.q]; k < G.qu.ip[c.q + 1]; k++) { const u = G.qu.ix[k], w = G.qu.dt[k]; if (uSet.has(u)) edges.push({ s: "q" + c.q, t: "u" + u, w, layer: "question->user", kind: "walk" }); else hidden += w; }
+    const leak = Math.max(0, 1 - c.tot);
+    if (leak > 1e-9) { leaky = true; edges.push({ s: "q" + c.q, t: "sink", w: leak, layer: "question->user", kind: "leak" }); }
+    if (hidden > 1e-9) byId["q" + c.q].tip.push(["to users not shown", f3(hidden)]);
+  });
+  if (leaky) add({ id: "sink", col: 2, kind: "sink", label: "∅ absorbed", size: 0.5, rank: 1e6, pinned: true, tip: [["node", "absorbing sink"], ["what", "κ leak + unanswered questions; never renormalised"]] });
+  // User -> Tag
+  const inflow = new Map();
+  users.forEach(u => { for (let k = G.ut.ip[u]; k < G.ut.ip[u + 1]; k++) { const t = G.ut.ix[k]; if (tSet.has(t)) { edges.push({ s: "u" + u, t: "t" + t, w: G.ut.dt[k], layer: "user->tag", kind: "walk" }); inflow.set(t, (inflow.get(t) || 0) + res.xu[u] * G.ut.dt[k]); } } });
+  const maxIn = Math.max(1e-12, ...inflow.values());
+  nodes.filter(n => n.col === 3).forEach(n => { const v = inflow.get(n.idx) || 0; n.size = Math.sqrt(v / maxIn); n.tip.push(["PPR mass flowing back", v.toFixed(4)]); });
+
+  // normalise edge widths within each layer, then order columns by barycentre
+  const peak = {}; edges.forEach(e => { peak[e.layer] = Math.max(peak[e.layer] || 0, e.w); }); edges.forEach(e => { e.wn = e.w / peak[e.layer]; });
+  orderColumns(nodes, edges, byId);
+  const totalUser = res.steps.length ? Array.from(res.xu).reduce((a, b) => a + b, 0) : 0;
+  return { G, res, nodes, edges, byId, users, uRank, qSel, nQt, nQU: edges.filter(e => e.layer === "question->user" && e.kind === "walk").length, totalUser, seedSet };
+}
+function shorten(s, n) { s = (s || "").replace(/\s+/g, " ").trim(); return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…"; }
+
+function orderColumns(nodes, edges, byId) {
+  const cols = [0, 1, 2, 3].map(c => nodes.filter(n => n.col === c).sort((a, b) => a.rank - b.rank));
+  const setOrder = arr => arr.forEach((n, i) => { n.order = i; });
+  cols.forEach(setOrder);
+  const bary = (n, ids, col) => {
+    const nb = edges.filter(e => e.kind === "walk" && (ids === "right" ? e.s === n.id : e.t === n.id)).map(e => byId[ids === "right" ? e.t : e.s]).filter(m => m.col === col);
+    return nb.length ? nb.reduce((a, m) => a + m.order / Math.max(1, cols[col].length - 1), 0) / nb.length : null;
+  };
+  const sortBy = (arr, key) => { const free = arr.filter(n => !n.pinned), fixed = arr.filter(n => n.pinned); free.sort((a, b) => (key(a) ?? 1e9) - (key(b) ?? 1e9) || a.rank - b.rank); return [...free, ...fixed]; };
+  for (let rep = 0; rep < 2; rep++) {
+    cols[3] = sortBy(cols[3], n => bary(n, "left", 2)); setOrder(cols[3]);
+    cols[1] = sortBy(cols[1], n => bary(n, "right", 2)); setOrder(cols[1]);
+    cols[2] = sortBy(cols[2], n => bary(n, "left", 1) ?? n.rank); setOrder(cols[2]);
+  }
+}
+
+/* ---------- drawing ---------- */
+const W = 1100; let svgW = W, svgH = 480;
+let nodeEl = {}, edgeEl = [], vp = null, geom = null;
+function yOf(n) { if (yOv.has(n.id)) return yOv.get(n.id); const m = geom.cnt[n.col]; return m === 1 ? geom.top + (geom.H - geom.top - 20) / 2 : geom.top + 12 + (geom.H - geom.top - 44) * n.order / (m - 1); }
+function edgePath(e) { const s = V.byId[e.s], t = V.byId[e.t], x0 = geom.xs[s.col], y0 = yOf(s), x1 = geom.xs[t.col], y1 = yOf(t), mx = (x0 + x1) / 2; return "M" + x0 + " " + y0 + " C" + mx + " " + y0 + "," + mx + " " + y1 + "," + x1 + " " + y1; }
+const COLS = ["Seed tag(s)", "Past questions", "Users (answerers)", "Tags reached"];
+
+function draw() {
+  svg.replaceChildren(); nodeEl = {}; edgeEl = [];
+  const cnt = [0, 1, 2, 3].map(c => V.nodes.filter(n => n.col === c).length), rows = Math.max(...cnt, 1);
+  const top = 40, H_ = Math.max(420, top + rows * 40 + 24);
+  geom = { cnt, top, H: H_, xs: [0, 1, 2, 3].map(c => 150 + c * ((W - 150 - 190) / 3)) };
+  svgW = W; svgH = H_; svg.setAttribute("viewBox", "0 0 " + W + " " + H_);
+  vp = S("g", {}, svg);
+  COLS.forEach((c, i) => { const t = S("text", { class: "colhead", x: geom.xs[i], y: 18 }, vp); t.textContent = c; });
+  const edgeLayer = S("g", {}, vp), nodeLayer = S("g", {}, vp);
+
+  V.edges.forEach(e => {
+    const s = V.byId[e.s], t = V.byId[e.t];
+    const g = S("g", { class: "edge" }, edgeLayer), wpx = 1 + 6 * e.wn;
+    const vis = S("path", { class: "vis" + (e.kind === "leak" ? " leak" : ""), d: edgePath(e), "stroke-width": wpx }, g);
+    const hit = S("path", { class: "hit", d: edgePath(e), "stroke-width": Math.max(wpx, 14) }, g);
+    bindTip(hit, () => ({ title: s.label + " → " + t.label, rows: [{ v: f3(e.w), k: e.kind === "leak" ? "absorbed (not renormalised)" : "transition probability", color: "var(--muted)", dash: e.kind === "leak" }, { v: e.layer.replace("->", " → "), k: "layer" }] }));
+    const rec = { e, g, vis, hit, label: null };
+    if (V.nQU <= 6 && e.layer === "question->user" && (e.kind === "walk" || e.w >= 0.05)) {
+      rec.label = S("text", { class: "lbl", "text-anchor": "middle", style: "font-size:10.5px;pointer-events:none" + (e.kind === "leak" ? ";fill:var(--muted)" : "") }, g);
+      rec.label.textContent = (e.kind === "leak" ? "leak " : "") + e.w.toFixed(2);
+    }
+    edgeEl.push(rec);
+  });
+  placeEdgeLabels();
+
+  V.nodes.forEach(n => {
+    const g = S("g", { class: "node" + (ST.pinned === n.id ? " pinned" : ""), tabindex: 0, role: "button", "aria-label": ROLE_NAME[n.kind] + " " + n.label }, nodeLayer);
+    const r = 5 + 11 * Math.sqrt(n.size);
+    const c = S("circle", { cx: 0, cy: 0, r: n.kind === "sink" ? 9 : r }, g);
+    c.style.fill = n.kind === "sink" ? "var(--surface)" : "var(--" + n.kind + ")";
+    if (n.kind === "sink") { c.style.stroke = "var(--muted)"; c.style.strokeDasharray = "3 3"; }
+    const first = n.col === 0, tx = first ? -(r + 9) : r + 9;
+    const t = S("text", { class: "lbl", x: tx, y: 4, "text-anchor": first ? "end" : "start" }, g); t.textContent = n.label;
+    g.setAttribute("transform", "translate(" + geom.xs[n.col] + " " + yOf(n) + ")");
+    nodeEl[n.id] = g;
+    wireNode(g, n);
+  });
+  applyViewport(); applyFocus();
+}
+function placeEdgeLabels() {
+  edgeEl.forEach(r => {
+    if (!r.label) return;
+    const s = V.byId[r.e.s], t = V.byId[r.e.t], x0 = geom.xs[s.col], y0 = yOf(s), x1 = geom.xs[t.col], y1 = yOf(t), mx = (x0 + x1) / 2;
+    const u = r.e.kind === "leak" ? 0.62 : 0.72, b = (a, c, d, e) => (1 - u) ** 3 * a + 3 * (1 - u) ** 2 * u * c + 3 * (1 - u) * u * u * d + u ** 3 * e;
+    r.label.setAttribute("x", b(x0, mx, mx, x1)); r.label.setAttribute("y", b(y0, y0, y1, y1) - 4);
+  });
+}
+function moveNode(n) {
+  nodeEl[n.id].setAttribute("transform", "translate(" + geom.xs[n.col] + " " + yOf(n) + ")");
+  edgeEl.forEach(r => { if (r.e.s === n.id || r.e.t === n.id) { const d = edgePath(r.e); r.vis.setAttribute("d", d); r.hit.setAttribute("d", d); } });
+  placeEdgeLabels();
+}
+
+/* hover / pin highlight */
+function applyFocus() {
+  const id = ST.hover || ST.pinned;
+  Object.values(nodeEl).forEach(g => g.classList.remove("hl"));
+  edgeEl.forEach(r => r.g.classList.remove("hl"));
+  svg.classList.toggle("has-focus", !!id && !!V.byId[id]);
+  if (!id || !V.byId[id]) return;
+  const ids = new Set([id]);
+  edgeEl.forEach(r => { if (r.e.s === id || r.e.t === id) { r.g.classList.add("hl"); ids.add(r.e.s); ids.add(r.e.t); } });
+  ids.forEach(i => nodeEl[i] && nodeEl[i].classList.add("hl"));
+}
+function wireNode(g, n) {
+  let down = null, moved = false;
+  bindTip(g, () => ({ title: n.full || n.label, rows: n.tip.map(([k, v]) => ({ k, v })) }), () => { ST.hover = n.id; applyFocus(); }, () => { ST.hover = null; applyFocus(); });
+  g.addEventListener("pointerdown", ev => {
+    if (ev.button !== 0) return; ev.stopPropagation();
+    down = { x: ev.clientX, y: ev.clientY, y0: yOf(n) }; moved = false; g.setPointerCapture(ev.pointerId);
+  });
+  g.addEventListener("pointermove", ev => {
+    if (!down) return;
+    if (!moved && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < 4) return;
+    moved = true; g.classList.add("dragging"); tipEl.hidden = true;
+    const p = toSvg(ev.clientX, ev.clientY), ny = (p.y - ST.ty) / ST.k;
+    yOv.set(n.id, Math.max(geom.top, Math.min(geom.H - 10, ny))); moveNode(n);
+  });
+  g.addEventListener("pointerup", ev => {
+    const wasDrag = moved; down = null; moved = false; g.classList.remove("dragging");
+    try { g.releasePointerCapture(ev.pointerId); } catch (e) { /* already released */ }
+    if (wasDrag) return;
+    if (ev.shiftKey && n.kind === "tag") { addSeed(n.idx); return; }
+    pin(ST.pinned === n.id ? null : n.id);
+  });
+  g.addEventListener("dblclick", () => { if (n.kind === "tag") setSeeds([n.idx]); });
+  g.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pin(ST.pinned === n.id ? null : n.id); } });
+}
+function pin(id) {
+  ST.pinned = id; Object.entries(nodeEl).forEach(([k, g]) => g.classList.toggle("pinned", k === id));
+  applyFocus(); renderDetail(); renderUsers();
+}
+
+/* pan / zoom */
+function toSvg(cx, cy) { const pt = svg.createSVGPoint(); pt.x = cx; pt.y = cy; const m = svg.getScreenCTM().inverse(); const p = pt.matrixTransform(m); return { x: p.x, y: p.y }; }
+function applyViewport() { if (vp) vp.setAttribute("transform", "translate(" + ST.tx + " " + ST.ty + ") scale(" + ST.k + ")"); }
+function zoomAt(x, y, f) { const k = Math.min(4, Math.max(0.4, ST.k * f)), r = k / ST.k; ST.tx = x - (x - ST.tx) * r; ST.ty = y - (y - ST.ty) * r; ST.k = k; }
+svg.addEventListener("wheel", ev => { if (!(ev.ctrlKey || ev.metaKey)) return; ev.preventDefault(); const p = toSvg(ev.clientX, ev.clientY); zoomAt(p.x, p.y, ev.deltaY < 0 ? 1.12 : 1 / 1.12); applyViewport(); }, { passive: false });
+let pan = null;
+svg.addEventListener("pointerdown", ev => { if (ev.target !== svg && ev.target.closest && ev.target.closest(".node, .edge")) return; const p = toSvg(ev.clientX, ev.clientY); pan = { x: p.x, y: p.y, tx: ST.tx, ty: ST.ty, moved: false }; svg.setPointerCapture(ev.pointerId); svg.classList.add("panning"); });
+svg.addEventListener("pointermove", ev => { if (!pan) return; const p = toSvg(ev.clientX, ev.clientY); if (Math.hypot(p.x - pan.x, p.y - pan.y) > 3) pan.moved = true; ST.tx = pan.tx + (p.x - pan.x); ST.ty = pan.ty + (p.y - pan.y); applyViewport(); });
+svg.addEventListener("pointerup", ev => { if (pan && !pan.moved && (ev.target === svg || !ev.target.closest(".node, .edge"))) pin(null); pan = null; svg.classList.remove("panning"); });
+
+/* ---------- side panels ---------- */
+function kv(parent, rows) { const d = H("div", "kv", null, parent); rows.forEach(([k, v]) => { H("span", null, k, d); H("b", null, v, d); }); return d; }
+function renderStats() {
+  statsBody.replaceChildren();
+  kv(statsBody, [
+    ["Questions carrying a seed", V.nQt.toLocaleString()],
+    ["Total user PPR mass", V.totalUser.toFixed(4)],
+    ["κ (leak constant)", V.G.kappa.toFixed(3)],
+    ["Damping d", ST.d.toFixed(2)],
+  ]);
+  if (!ST.seeds.length) H("p", "empty", "Add a seed tag to begin.", statsBody);
+}
+function renderUsers() {
+  usersBody.replaceChildren();
+  if (!V.users.length) { H("p", "empty", "No users reachable from these seeds.", usersBody); return; }
+  const top = V.res.xu[V.users[0]];
+  V.users.slice(0, 10).forEach((u, i) => {
+    const b = H("button", "urow" + (ST.pinned === "u" + u ? " on" : ""), null, usersBody); b.type = "button";
+    H("span", "rk", String(i + 1), b);
+    const mid = H("span", null, null, b); H("span", null, "user " + D.userIds[u], mid);
+    const bar = H("div", "bar", null, mid); bar.style.width = Math.max(3, 100 * V.res.xu[u] / top) + "%";
+    H("span", "sc", V.res.xu[u].toFixed(4), b);
+    b.addEventListener("click", () => pin(ST.pinned === "u" + u ? null : "u" + u));
+    b.addEventListener("mouseenter", () => { ST.hover = "u" + u; applyFocus(); });
+    b.addEventListener("mouseleave", () => { ST.hover = null; applyFocus(); });
+  });
+}
+function renderSteps() {
+  stepsBody.replaceChildren();
+  const steps = V.res.steps.slice(0, 12), w = 270, h = 96, m = { l: 4, b: 16, t: 4 }, band = (w - m.l) / steps.length, mx = Math.max(...steps.map(s => s.tag + s.question + s.user));
+  const sv = S("svg", { viewBox: "0 0 " + w + " " + h, role: "img", "aria-label": "Mass by node type per walk step" }, stepsBody); sv.style.cssText = "width:100%;height:auto;cursor:default";
+  steps.forEach((s, i) => {
+    let acc = 0; const x = m.l + i * band + band * 0.12, bw = band * 0.76, y = v => h - m.b - (h - m.b - m.t) * v / mx;
+    ["tag", "question", "user"].forEach(k => { if (s[k] <= 0) return; S("rect", { x, y: y(acc + s[k]), width: bw, height: Math.max(0, y(acc) - y(acc + s[k])), rx: 1.5, style: "fill:var(--" + k + ");stroke:var(--surface);stroke-width:1.5px" }, sv); acc += s[k]; });
+    const t = S("text", { class: "axis", x: x + bw / 2, y: h - 3, "text-anchor": "middle", style: "font-size:9.5px" }, sv); t.textContent = i;
+    const hit = S("rect", { class: "hitband", x: m.l + i * band, y: 0, width: band, height: h - m.b }, sv);
+    bindTip(hit, () => ({ title: "walk step " + i, rows: ["tag", "question", "user"].map(k => ({ v: fmt(s[k]), k: ROLE_NAME[k] + "s", color: "var(--" + k + ")" })) }));
+  });
+  H("p", "hint", "Mass cycles Tag → Question → User every three steps and shrinks by d (and by absorption) each time.", stepsBody);
+}
+function renderDetail() {
+  detailBody.replaceChildren();
+  const n = ST.pinned && V.byId[ST.pinned];
+  if (!n) { H("p", "empty", "Click a node to pin it and see its details here.", detailBody); return; }
+  const G = V.G; H("h3", null, n.full || n.label, detailBody);
+  kv(detailBody, n.tip.filter(([k]) => k !== "node").map(([k, v]) => [k, v]));
+  const btns = H("div", "btns", null, detailBody);
+  const btn = (txt, fn) => { const b = H("button", null, txt, btns); b.type = "button"; b.addEventListener("click", fn); return b; };
+  if (n.kind === "tag") {
+    if (!ST.seeds.includes(n.idx)) btn("Add as seed", () => addSeed(n.idx)); else if (ST.seeds.length > 1) btn("Remove seed", () => removeSeed(n.idx));
+    btn("Walk here (replace seeds)", () => setSeeds([n.idx]));
+  } else if (n.kind === "user") {
+    const row = []; for (let k = G.ut.ip[n.idx]; k < G.ut.ip[n.idx + 1]; k++) row.push([G.ut.ix[k], G.ut.dt[k]]);
+    row.sort((a, b) => b[1] - a[1]);
+    H("p", "empty", "Top tags (click to add as seed):", detailBody).style.marginTop = "8px";
+    const tb = H("div", "btns", null, detailBody);
+    row.slice(0, 5).forEach(([t, w]) => { const b = H("button", null, D.tags[t] + " " + w.toFixed(2), tb); b.type = "button"; b.addEventListener("click", () => addSeed(t)); });
+  } else if (n.kind === "question") {
+    const ans = []; for (let k = G.qu.ip[n.idx]; k < G.qu.ip[n.idx + 1]; k++) ans.push([G.qu.ix[k], G.qu.dt[k]]);
+    ans.sort((a, b) => b[1] - a[1]);
+    if (ans.length) { H("p", "empty", "Answerers (probability of the question's mass):", detailBody).style.marginTop = "8px"; kv(detailBody, ans.slice(0, 6).map(([u, w]) => ["user " + D.userIds[u], w.toFixed(3)])); }
+  }
+}
+
+/* ---------- state transitions ---------- */
+function setSeeds(s) { s = s.filter(i => i !== undefined); if (!s.length) return; ST.seeds = s; ST.pinned = null; yOv.clear(); schedule(); }
+function addSeed(t) { if (!ST.seeds.includes(t)) { ST.seeds = ST.seeds.concat([t]); ST.pinned = null; yOv.clear(); schedule(); } }
+function removeSeed(t) { if (ST.seeds.length > 1) { ST.seeds = ST.seeds.filter(x => x !== t); ST.pinned = null; yOv.clear(); schedule(); } }
+function renderChips() {
+  chips.replaceChildren();
+  ST.seeds.forEach(t => {
+    const c = H("span", "chip", null, chips); H("i", null, null, c); c.appendChild(document.createTextNode(D.tags[t]));
+    const x = H("button", null, "×", c); x.type = "button"; x.title = "Remove " + D.tags[t]; x.setAttribute("aria-label", "Remove seed " + D.tags[t]); x.disabled = ST.seeds.length < 2; x.style.opacity = x.disabled ? 0.35 : 1;
+    x.addEventListener("click", () => removeSeed(t));
+  });
+}
+tagInput.addEventListener("change", () => { const i = TAGIDX.get(tagInput.value.trim()); if (i !== undefined) { addSeed(i); tagInput.value = ""; } });
+tagInput.addEventListener("keydown", ev => { if (ev.key === "Enter") tagInput.dispatchEvent(new Event("change")); });
+
+let queued = false;
+function schedule() { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; refresh(); }); }
+function refresh() {
+  Object.entries(segBtns).forEach(([k, b]) => b.setAttribute("aria-pressed", String(ST.graph === k)));
+  Object.values(sliders).forEach(s => s.show());
+  renderChips(); V = buildView();
+  if (ST.pinned && !V.byId[ST.pinned]) ST.pinned = null;
+  draw(); renderStats(); renderUsers(); renderSteps(); renderDetail(); writeHash();
+}
+refresh();
+
+/* hooks for automated checks */
+window.__explorer = { ppr: (tags, d, graph) => { const r = ppr(GR[graph || "weighted"], tags.map(t => TAGIDX.get(t)), d); return Array.from(r.xu); }, state: ST, view: () => V };
+</script>
+</body>
+</html>

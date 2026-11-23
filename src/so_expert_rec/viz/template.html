@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+/*__KIT_CSS__*/
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+"use strict";
+const P = JSON.parse(document.getElementById("payload").textContent);
+
+/*__KIT_JS__*/
+/* ---------- page scaffold ---------- */
+const app = document.getElementById("app");
+const hdr = H("header", null, null, app);
+const hd = H("div", null, null, hdr);
+H("h1", null, P.title, hd);
+H("p", "sub", P.subtitle, hd);
+const themeBtn = H("button", "theme", "Toggle dark / light", hdr);
+themeBtn.type = "button";
+themeBtn.addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.dataset.theme = cur === "dark" ? "light" : "dark";
+});
+if (P.tiles) {
+  const tiles = H("div", "tiles", null, app);
+  for (const t of P.tiles) {
+    const tile = H("div", "tile", null, tiles);
+    const b = H("b", null, null, tile);
+    if (t.role) b.appendChild(Object.assign(H("i", "dot"), { style: "background:var(--" + t.role + ")" }));
+    b.appendChild(document.createTextNode(t.value));
+    H("span", null, t.label, tile);
+  }
+}
+const grid = H("div", "panels", null, app);
+const WIDE = new Set(["layered", "dumbbell", "heatmap"]);
+grid.style.setProperty("--cols", Math.min(3, Math.max(1, P.panels.filter(p => !WIDE.has(p.type)).length)));
+
+function legend(card, items) {
+  const lg = H("div", "legend", null, card);
+  for (const it of items) {
+    const s = H("span", null, null, lg);
+    const i = H("i", it.cls, null, s); if (it.color) i.style.background = it.color;
+    s.appendChild(document.createTextNode(it.name));
+  }
+}
+function chartSvg(card, W, H_, minW) {
+  const wrap = H("div", "scroll", null, card);
+  const svg = S("svg", { viewBox: "0 0 " + W + " " + H_, role: "img" }, wrap);
+  if (minW) svg.style.minWidth = minW + "px";
+  return svg;
+}
+function yAxis(svg, x0, x1, y, max, dp, label) {
+  for (const v of niceTicks(max, 5)) {
+    S("line", { class: v === 0 ? "base" : "grid", x1: x0, x2: x1, y1: y(v), y2: y(v) }, svg);
+    const t = S("text", { class: "axis", x: x0 - 8, y: y(v) + 4, "text-anchor": "end" }, svg); t.textContent = fmt(v);
+  }
+  if (label) { const t = S("text", { class: "axis", x: x0, y: 12 }, svg); t.textContent = label; }
+}
+
+const RENDER = {};
+
+/* ---------- layered graph: Tag -> Question -> User -> Tag ---------- */
+RENDER.layered = function (card, d) {
+  const kinds = [...new Set(d.nodes.map(n => n.kind))];
+  const items = ["tag", "question", "user"].filter(k => kinds.includes(k)).map(k => ({ cls: "sw", color: "var(--" + k + ")", name: ROLE_NAME[k] }));
+  if (kinds.includes("sink")) items.push({ cls: "ln dash", name: "Absorbed mass (leak)" });
+  items.push({ cls: "ln", name: "Edge thickness ∝ transition probability (per layer)" });
+  legend(card, items);
+
+  const byId = Object.fromEntries(d.nodes.map(n => [n.id, n]));
+  const perCol = d.columns.map((_, c) => d.nodes.filter(n => n.col === c));
+  const rows = Math.max(...perCol.map(a => a.length));
+  const W = 1100, top = 40, rowH = 40, H_ = Math.max(360, top + rows * rowH + 24);
+  const xs = d.columns.map((_, c) => 150 + c * ((W - 150 - 190) / (d.columns.length - 1)));
+  const nQU = d.edges.filter(e => e.layer === "question->user" && e.kind === "walk").length;
+  const yOf = n => { const m = perCol[n.col].length; return m === 1 ? top + (H_ - top - 20) / 2 : top + 12 + (H_ - top - 44) * n.order / (m - 1); };
+  const rOf = n => 5 + 11 * Math.sqrt(n.size);
+  const svg = chartSvg(card, W, H_, 760);
+
+  d.columns.forEach((c, i) => { const t = S("text", { class: "colhead", x: xs[i], y: 18 }, svg); t.textContent = c.label; });
+
+  const edgeEls = d.edges.map(e => {
+    const s = byId[e.s], t = byId[e.t], x0 = xs[s.col], y0 = yOf(s), x1 = xs[t.col], y1 = yOf(t), mx = (x0 + x1) / 2;
+    const path = "M" + x0 + " " + y0 + " C" + mx + " " + y0 + "," + mx + " " + y1 + "," + x1 + " " + y1;
+    const g = S("g", { class: "edge" }, svg);
+    const wpx = 1 + 6 * e.wn;
+    S("path", { class: "vis" + (e.kind === "leak" ? " leak" : ""), d: path, "stroke-width": wpx }, g);
+    const hit = S("path", { class: "hit", d: path, "stroke-width": Math.max(wpx, 14) }, g);
+    bindTip(hit, () => ({
+      title: s.label + " → " + t.label,
+      rows: [{ v: fmt(e.w), k: e.kind === "leak" ? "absorbed (not renormalised)" : "transition probability", color: "var(--muted)", dash: e.kind === "leak" }, { v: e.layer.replace("->", " → "), k: "layer" }],
+    }));
+    const el = { e, g };
+    // selective direct labels on the heaviest question→user / user→tag edges
+    if (e.kind === "walk" && e.layer === "question->user" && nQU <= 6) {
+      const u = 0.72, bx = (1-u)**3*x0 + 3*(1-u)**2*u*mx + 3*(1-u)*u*u*mx + u**3*x1, by = (1-u)**3*y0 + 3*(1-u)**2*u*y0 + 3*(1-u)*u*u*y1 + u**3*y1;
+      const lt = S("text", { class: "lbl", x: bx, y: by - 4, "text-anchor": "middle", style: "font-size:10.5px;pointer-events:none" }, g); lt.textContent = e.w.toFixed(2);
+    }
+    if (e.kind === "leak" && e.w >= 0.05 && nQU <= 6) {
+      const bx = x0 + (x1 - x0) * 0.62, by = y0 + (y1 - y0) * 0.62;
+      const lt = S("text", { class: "lbl", x: bx, y: by - 4, "text-anchor": "middle", style: "font-size:10.5px;pointer-events:none;fill:var(--muted)" }, g); lt.textContent = "leak " + e.w.toFixed(2);
+    }
+    return el;
+  });
+
+  const nodeEls = d.nodes.map(n => {
+    const x = xs[n.col], y = yOf(n), r = rOf(n);
+    const g = S("g", { class: "node", tabindex: 0, role: "img", "aria-label": ROLE_NAME[n.kind] + " " + n.label }, svg);
+    const c = S("circle", { cx: x, cy: y, r: n.kind === "sink" ? 9 : r }, g);
+    c.style.fill = n.kind === "sink" ? "var(--surface)" : "var(--" + n.kind + ")";
+    if (n.kind === "sink") { c.style.stroke = "var(--muted)"; c.style.strokeDasharray = "3 3"; }
+    const first = n.col === 0;
+    const t = S("text", { class: "lbl", x: x + (first ? -(r + 9) : r + 9), y: y + 4, "text-anchor": first ? "end" : "start" }, g);
+    t.textContent = n.label;
+    return { n, g };
+  });
+  nodeEls.forEach(({ n, g }) => {
+    const related = () => {
+      const edges = edgeEls.filter(x => x.e.s === n.id || x.e.t === n.id), ids = new Set([n.id]);
+      edges.forEach(x => { ids.add(x.e.s); ids.add(x.e.t); });
+      svg.classList.add("has-focus");
+      edges.forEach(x => x.g.classList.add("hl"));
+      nodeEls.forEach(o => o.g.classList.toggle("hl", ids.has(o.n.id)));
+    };
+    const clear = () => { svg.classList.remove("has-focus"); edgeEls.forEach(x => x.g.classList.remove("hl")); nodeEls.forEach(o => o.g.classList.remove("hl")); };
+    bindTip(g, () => ({ title: n.label, rows: n.tip.map(([k, v]) => ({ k, v })) }), related, clear);
+  });
+};
+
+/* ---------- stacked bars (one tooltip lists every series at that step) ---------- */
+RENDER.stacked = function (card, d) {
+  legend(card, d.series.map(s => ({ cls: "sw", color: "var(--" + s.role + ")", name: s.name })));
+  const W = 560, Ht = 300, m = { l: 52, r: 12, t: 22, b: 40 }, iw = W - m.l - m.r, ih = Ht - m.t - m.b;
+  const totals = d.x.map((_, i) => d.series.reduce((a, s) => a + s.values[i], 0));
+  const ticks = niceTicks(Math.max(...totals) * 1.04, 5), ymax = ticks[ticks.length - 1];
+  const y = v => m.t + ih - ih * v / ymax, band = iw / d.x.length;
+  const svg = chartSvg(card, W, Ht, 300);
+  yAxis(svg, m.l, W - m.r, y, ymax, null, d.ylabel);
+  d.x.forEach((xv, i) => {
+    let acc = 0;
+    const bx = m.l + i * band + band * 0.11, bw = band * 0.78;
+    d.series.forEach(s => {
+      const v = s.values[i]; if (v <= 0) return;
+      const r = S("rect", { x: bx, y: y(acc + v), width: bw, height: Math.max(0, y(acc) - y(acc + v)), rx: 2, style: "fill:var(--" + s.role + ");stroke:var(--surface);stroke-width:2px" }, svg);
+      acc += v;
+    });
+    const t = S("text", { class: "axis", x: bx + bw / 2, y: Ht - m.b + 16, "text-anchor": "middle" }, svg); t.textContent = xv;
+    const hit = S("rect", { class: "hitband", x: m.l + i * band, y: m.t, width: band, height: ih, tabindex: 0 }, svg);
+    bindTip(hit, () => ({
+      title: d.xlabel + " " + xv,
+      rows: d.series.map(s => ({ v: fmt(s.values[i]), k: s.name, color: "var(--" + s.role + ")" })).concat([{ v: fmt(totals[i]), k: "total" }]),
+    }));
+  });
+  const xl = S("text", { class: "axis", x: m.l + iw / 2, y: Ht - 6, "text-anchor": "middle" }, svg); xl.textContent = d.xlabel;
+};
+
+/* ---------- lines (emphasis: dark = focus series, grey dashed = comparison) ---------- */
+RENDER.lines = function (card, d) {
+  legend(card, d.series.map(s => ({ cls: "ln" + (s.dash ? " dash" : ""), color: "transparent", name: s.name })));
+  card.querySelectorAll(".legend i").forEach((el, i) => { el.style.borderTopColor = d.series[i].ink === "primary" ? "var(--ink)" : "var(--muted)"; });
+  const W = 560, Ht = 300, m = { l: 52, r: 120, t: 22, b: 40 }, iw = W - m.l - m.r, ih = Ht - m.t - m.b;
+  const ticks = niceTicks(Math.max(...d.series.flatMap(s => s.values)) * 1.04, 5), ymax = ticks[ticks.length - 1];
+  const y = v => m.t + ih - ih * v / ymax, x = i => m.l + iw * i / (d.x.length - 1);
+  const svg = chartSvg(card, W, Ht, 300);
+  yAxis(svg, m.l, W - m.r, y, ymax, null, d.ylabel);
+  d.x.forEach((xv, i) => { const t = S("text", { class: "axis", x: x(i), y: Ht - m.b + 16, "text-anchor": "middle" }, svg); t.textContent = xv; });
+  const xl = S("text", { class: "axis", x: m.l + iw / 2, y: Ht - 6, "text-anchor": "middle" }, svg); xl.textContent = d.xlabel;
+  const cross = S("line", { class: "base", y1: m.t, y2: m.t + ih, style: "display:none" }, svg);
+  const dots = [];
+  let lastY = [];
+  d.series.forEach(s => {
+    const col = s.ink === "primary" ? "var(--ink)" : "var(--muted)";
+    const pts = s.values.map((v, i) => x(i) + "," + y(v)).join(" ");
+    S("polyline", { points: pts, fill: "none", style: "stroke:" + col + ";stroke-width:2px;stroke-linejoin:round;stroke-linecap:round" + (s.dash ? ";stroke-dasharray:6 5" : "") }, svg);
+    const dot = S("circle", { r: 4.5, style: "display:none;fill:" + col + ";stroke:var(--surface);stroke-width:2px" }, svg); dots.push(dot);
+    let ly = y(s.values[s.values.length - 1]) + 4; lastY.forEach(p => { if (Math.abs(p - ly) < 14) ly = p + 14; }); lastY.push(ly);
+    const lt = S("text", { class: "lbl", x: x(d.x.length - 1) + 8, y: ly }, svg); lt.textContent = s.name.split(" (")[0];
+  });
+  const hit = S("rect", { class: "hitband", x: m.l, y: m.t, width: iw, height: ih, style: "fill:transparent" }, svg);
+  hit.style.pointerEvents = "all";
+  const idxAt = ev => { const b = svg.getBoundingClientRect(); const px = (ev.clientX - b.left) * (W / b.width); return Math.max(0, Math.min(d.x.length - 1, Math.round((px - m.l) / iw * (d.x.length - 1)))); };
+  let cur = 0;
+  const show = i => { cur = i; cross.style.display = ""; cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); dots.forEach((dt, k) => { dt.style.display = ""; dt.setAttribute("cx", x(i)); dt.setAttribute("cy", y(d.series[k].values[i])); }); };
+  const off = () => { cross.style.display = "none"; dots.forEach(dt => dt.style.display = "none"); };
+  bindTip(hit, ev => { const i = ev ? idxAt(ev) : cur; show(i); return { title: d.xlabel + " " + d.x[i], rows: d.series.map(s => ({ v: fmt(s.values[i]), k: s.name, color: s.ink === "primary" ? "var(--ink)" : "var(--muted)", dash: s.dash })) }; }, null, off);
+  hit.setAttribute("tabindex", 0);
+  hit.addEventListener("keydown", ev => { if (ev.key === "ArrowRight") cur = Math.min(d.x.length - 1, cur + 1); else if (ev.key === "ArrowLeft") cur = Math.max(0, cur - 1); else return; ev.preventDefault(); hit.dispatchEvent(new Event("focus")); });
+};
+
+/* ---------- dumbbell ---------- */
+RENDER.dumbbell = function (card, d) {
+  const items = [{ cls: "sw", color: "var(--ink)", name: d.a_name }];
+  if (d.b_name) items.push({ cls: "ring", name: d.b_name });
+  legend(card, items);
+  const rowH = 30, W = 1000, m = { l: 150, r: 24, t: 14, b: 40 }, Ht = m.t + m.b + rowH * d.rows.length, iw = W - m.l - m.r;
+  const vmax = Math.max(...d.rows.flatMap(r => [r.a, r.b || 0])) * 1.08, ticks = niceTicks(vmax, 6), xmax = ticks[ticks.length - 1];
+  const x = v => m.l + iw * v / xmax;
+  const svg = chartSvg(card, W, Ht, 620);
+  ticks.forEach(v => { S("line", { class: v === 0 ? "base" : "grid", x1: x(v), x2: x(v), y1: m.t, y2: Ht - m.b }, svg); const t = S("text", { class: "axis", x: x(v), y: Ht - m.b + 16, "text-anchor": "middle" }, svg); t.textContent = fmt(v); });
+  const xl = S("text", { class: "axis", x: m.l + iw / 2, y: Ht - 6, "text-anchor": "middle" }, svg); xl.textContent = d.xlabel;
+  d.rows.forEach((r, i) => {
+    const cy = m.t + rowH * i + rowH / 2;
+    const lt = S("text", { x: m.l - 10, y: cy + 4, "text-anchor": "end" }, svg); lt.textContent = r.label;
+    if (r.b != null) {
+      S("line", { x1: x(r.a), x2: x(r.b), y1: cy, y2: cy, style: "stroke:var(--axis);stroke-width:3px;stroke-linecap:round" }, svg);
+      S("circle", { cx: x(r.b), cy, r: 5.5, style: "fill:var(--surface);stroke:var(--muted);stroke-width:2px" }, svg);
+    }
+    S("circle", { cx: x(r.a), cy, r: 6, style: "fill:var(--ink);stroke:var(--surface);stroke-width:2px" }, svg);
+    const hit = S("rect", { class: "hitband", x: 0, y: cy - rowH / 2, width: W, height: rowH, tabindex: 0 }, svg);
+    bindTip(hit, () => ({ title: r.label, rows: r.tip.map(([k, v]) => ({ k, v })) }));
+  });
+};
+
+/* ---------- histogram (bins are equal-width bands, so log-binned data reads on a log axis) ---------- */
+RENDER.hist = function (card, d, panel) {
+  const W = 420, Ht = 280, m = { l: 52, r: 10, t: 14, b: 54 }, iw = W - m.l - m.r, ih = Ht - m.t - m.b;
+  const max = Math.max(...d.bins.map(b => b.count)), ticks = niceTicks(max * 1.05, 4), ymax = ticks[ticks.length - 1];
+  const y = v => m.t + ih - ih * v / ymax, band = iw / d.bins.length, total = d.bins.reduce((a, b) => a + b.count, 0);
+  const role = panel.role;
+  const svg = chartSvg(card, W, Ht, 300);
+  yAxis(svg, m.l, W - m.r, y, ymax, null, null);
+  const dp = d.decimals;
+  const lab = b => d.xlog ? (b.lo === b.hi ? fmt(b.lo) : fmt(b.lo) + "–" + fmt(b.hi)) : fmt(b.lo, dp) + "–" + fmt(b.hi, dp);
+  d.bins.forEach((b, i) => {
+    const bx = m.l + i * band + band * 0.07, bw = band * 0.86;
+    S("rect", { x: bx, y: y(b.count), width: bw, height: Math.max(0, y(0) - y(b.count)), rx: 2, style: "fill:var(--" + role + ")" }, svg);
+    if (i % 2 === 0 || d.bins.length < 9) { const t = S("text", { class: "axis", transform: "translate(" + (bx + bw / 2) + "," + (Ht - m.b + 12) + ") rotate(-40)", "text-anchor": "end", style: "font-size:10px" }, svg); t.textContent = d.xlog ? fmt(b.lo) : fmt(b.lo, dp); }
+    const hit = S("rect", { class: "hitband", x: m.l + i * band, y: m.t, width: band, height: ih, tabindex: 0 }, svg);
+    bindTip(hit, () => ({ title: d.xlabel + ": " + lab(b), rows: [{ v: b.count.toLocaleString(), k: d.ylabel, color: "var(--" + role + ")" }, { v: (100 * b.count / total).toFixed(1) + "%", k: "of total" }] }));
+  });
+  const xl = S("text", { class: "axis", x: m.l + iw / 2, y: Ht - 4, "text-anchor": "middle" }, svg); xl.textContent = d.xlabel + (d.xlog ? " (log bins)" : "");
+  const yl = S("text", { class: "axis", x: m.l, y: 8 }, svg); yl.textContent = d.ylabel;
+};
+
+/* ---------- heatmap: single-hue sequential, colour ∝ sqrt(p) ---------- */
+RENDER.heatmap = function (card, d) {
+  const n = d.rows.length, cell = 26, m = { l: 190, t: 170, r: 60, b: 14 };
+  const W = m.l + cell * d.cols.length + m.r, Ht = m.t + cell * n + m.b;
+  const vmax = Math.max(...d.values.flat());
+  const lg = H("div", "legend", null, card);
+  H("span", null, "0", lg);
+  const bar = H("span", null, null, lg); bar.style.cssText = "display:inline-block;width:180px;height:10px;border-radius:5px;align-self:center;background:linear-gradient(to right,var(--seq0),var(--seq1))";
+  H("span", null, fmt(vmax) + " (colour ∝ √p)", lg);
+  const svg = chartSvg(card, W, Ht, Math.min(W, 520));
+  d.cols.forEach((c, j) => { const t = S("text", { transform: "translate(" + (m.l + cell * j + cell / 2 + 4) + "," + (m.t - 8) + ") rotate(-50)", "text-anchor": "start", style: "font-size:11px" }, svg); t.textContent = c; });
+  d.rows.forEach((r, i) => {
+    const t = S("text", { x: m.l - 8, y: m.t + cell * i + cell / 2 + 4, "text-anchor": "end", style: "font-size:11px" }, svg); t.textContent = r;
+    d.cols.forEach((c, j) => {
+      const v = d.values[i][j], p = 100 * Math.sqrt(v / vmax);
+      const rc = S("rect", { class: "cell", x: m.l + cell * j + 1, y: m.t + cell * i + 1, width: cell - 2, height: cell - 2, rx: 3, tabindex: 0, style: "fill:color-mix(in srgb, var(--seq1) " + p.toFixed(1) + "%, var(--seq0))" }, svg);
+      bindTip(rc, () => ({ title: r + " → " + c, rows: [{ v: v.toFixed(4), k: "one-lap probability" }].concat(i === j ? [{ v: "diagonal", k: "walk returns to the same tag" }] : []) }));
+    });
+  });
+};
+
+/* ---------- render ---------- */
+for (const panel of P.panels) {
+  const card = H("section", "card" + (WIDE.has(panel.type) ? " wide" : ""), null, grid);
+  if (panel.title) H("h2", null, panel.title, card);
+  if (panel.note) H("p", "note", panel.note, card);
+  RENDER[panel.type](card, panel.data, panel);
+  addTable(card, panel);
+}
+if (P.notes && P.notes.length) { const ul = H("ul", "notes", null, app); P.notes.forEach(n => H("li", null, n, ul)); }
+
+/* ---------- table view (every chart is reachable without hovering) ---------- */
+function addTable(card, panel) {
+  const d = panel.data, det = H("details", null, null, card);
+  H("summary", null, "Table view", det);
+  const wrap = H("div", "tablewrap", null, det), tb = H("table", null, null, wrap);
+  const head = cols => { const tr = H("tr", null, null, H("thead", null, null, tb)); cols.forEach(c => H("th", null, c, tr)); };
+  const body = H("tbody", null, null, tb);
+  const row = cells => { const tr = H("tr", null, null, body); cells.forEach(c => H("td", null, String(c), tr)); };
+  const t = panel.type;
+  if (t === "layered") { const by = Object.fromEntries(d.nodes.map(n => [n.id, n])); head(["From", "To", "Probability", "Layer"]); d.edges.forEach(e => row([by[e.s].label, by[e.t].label, fmt(e.w), e.layer + (e.kind === "leak" ? " (absorbed)" : "")])); }
+  else if (t === "stacked" || t === "lines") { head([d.xlabel].concat(d.series.map(s => s.name))); d.x.forEach((xv, i) => row([xv].concat(d.series.map(s => fmt(s.values[i]))))); }
+  else if (t === "dumbbell") { head(["User", d.a_name, d.b_name || ""]); d.rows.forEach(r => row([r.label, fmt(r.a), fmt(r.b)])); }
+  else if (t === "hist") { head([d.xlabel, d.ylabel]); d.bins.forEach(b => row([b.lo === b.hi ? fmt(b.lo) : fmt(b.lo, d.decimals) + "–" + fmt(b.hi, d.decimals), b.count])); }
+  else if (t === "heatmap") { head(["from \\ to"].concat(d.cols)); d.rows.forEach((r, i) => row([r].concat(d.values[i].map(v => v.toFixed(4))))); }
+}
+</script>
+</body>
+</html>
